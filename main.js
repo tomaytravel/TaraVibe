@@ -100,6 +100,12 @@ const uniforms = {
 
   uAuraMaxPx: { value: DEFAULTS.auraMaxPx },
   uAuraType: { value: DEFAULTS.auraType },
+  uFlameHeight: { value: 1.0 },
+  uFlameTemp: { value: 1.0 },
+
+  uDropSpeed: { value: 1.0 },
+  uDropSize: { value: 1.0 },
+  uDropDir: { value: 0 }, // 0 radial, 1 up, 2 left, 3 right
 };
 
 const vert = /* glsl */ `
@@ -333,27 +339,25 @@ void main(){
     auraMask *= radialPulse;
 
   } else if (uAuraType < 1.5) {
-    // TYPE 1: flame upward flicker
-    // Flame bias: top stronger, flicker rises with time
-    float y = vUv.y;
-    float flameBand = ring(silDist, 0.55 + edgeShift, 0.07); // boundary band
-    float flick = fbm(vec2(ang*3.0, t*1.2 + y*3.0));
-    float upF = fbm(vec2(vUv.x*2.0, t*1.6 + y*6.0));
-    float flame = (0.6 + 0.4*sin(t*5.0 + flick*6.2831853)) * (0.5 + 0.5*upF);
+    // TRUE FLAME PLUME
 
-    // upward “licking” effect: more at top, less at bottom
-    float upBias = smoothstep(0.25, 0.95, y);
-    float downCut = 1.0 - smoothstep(0.0, 0.25, y);
-    float verticalShape = upBias * (0.65 + 0.35*downCut);
+    float rimBase = ring(silDist, 0.55 + edgeShift, 0.06);
 
-    float flameMotion = mix(flame, 1.0, lockPhase);
-    auraRim = clamp(flameBand * flameMotion * verticalShape * (0.8 + 0.5*uAura), 0.0, 1.0);
+    // upward plume distortion
+    float plumeNoise = fbm(vec2(vUv.x*4.0, t*2.5));
+    float plume = pow(max(0.0, vUv.y - 0.4), 1.8) * uFlameHeight;
+    plume *= (0.5 + plumeNoise);
 
-    // field less “wave”, more “heat”
-    float heat = 0.85 + 0.15*sin(t*3.0 + flick*6.2831853);
-    auraMask *= heat;
+    // tear upward
+    float tear = sin(t*6.0 + ang*8.0) * 0.08;
+    float flameShape = rimBase * (1.0 + plume + tear);
 
-  } else if (uAuraType < 2.5) {
+    // temperature shift
+    float temp = clamp(uFlameTemp * (0.6 + plumeNoise), 0.0, 2.0);
+
+    auraRim = flameShape * (0.9 + 0.4*temp);
+    auraMask *= (0.6 + plume);
+} else if (uAuraType < 2.5) {
     // TYPE 2: full fade away
     // fade cycle after grown: repeatedly fades to zero and returns
     float fadeT = max(0.0, t - uGrowDur);
@@ -377,59 +381,57 @@ void main(){
     auraRim *= fade;
 
   } else {
-    // TYPE 3: droplets (independent rings fly out & shrink)
-    // We generate several procedural droplets with different birth offsets.
-    // Each droplet is a ring around its own center, moving outward and shrinking.
+    // DROPLETS FROM RIM (not inside aura)
+
     float droplets = 0.0;
 
-    // Only spawn after some growth (so it doesn't fight early formation)
-    float tt = max(0.0, t - 1.0);
+    float rimMask = ring(silDist, 0.55 + edgeShift, 0.04);
+    rimMask *= auraZone2;
 
-    // droplet count
-    const int N = 10;
-    for (int i = 0; i < N; i++) {
-      float fi = float(i);
+    const int N = 12;
+    for(int i=0;i<N;i++){
+        float fi=float(i);
 
-      // per droplet seeds
-      float seed = fi * 13.37;
-      float ang0 = fract(sin(seed*12.9898) * 43758.5453) * 6.2831853;
+        float seed=fi*17.123;
+        float ang0=fract(sin(seed)*43758.5453)*6.2831853;
 
-      // life timing
-      float off = fract(sin((seed+2.0)*78.233) * 43758.5453) * 6.0; // 0..6
-      float life = fract((tt + off) / 3.5);                         // 0..1 repeating
-      float age = life;
+        float life=fract((t*0.5*uDropSpeed + fi*0.21));
+        float age=life;
 
-      // start near silhouette edge, move outward
-      float startR = 0.18 + 0.06*fract(sin((seed+4.0)*11.1)*999.9);
-      float travel = 0.35; // how far it goes
-      float dr = startR + travel * age;
+        // spawn exactly on rim
+        vec2 baseDir;
 
-      // droplet center in screen UV
-      vec2 dc = vec2(cos(ang0), sin(ang0)) * dr;
+        if(uDropDir<0.5){
+            baseDir=vec2(cos(ang0),sin(ang0)); // radial
+        } else if(uDropDir<1.5){
+            baseDir=vec2(0.0,1.0);
+        } else if(uDropDir<2.5){
+            baseDir=vec2(-1.0,0.0);
+        } else {
+            baseDir=vec2(1.0,0.0);
+        }
 
-      // droplet ring radius shrinks with age
-      float ringR = mix(0.06, 0.01, age);
-      float ringW = mix(0.020, 0.008, age);
+        float dist=0.02 + age*0.5;
+        vec2 dc=baseDir*dist;
 
-      float d = length((vUv - 0.5) - dc);
-      float ringM = ring(d, ringR, ringW);
+        float size=mix(0.06,0.01,age)*uDropSize;
+        float w=mix(0.02,0.005,age)*uDropSize;
 
-      // fade out as it ages
-      float alpha = (1.0 - smoothstep(0.65, 1.0, age));
-      // stop motion on lock: freeze at age ~ current age, so just keep visible (no time change)
-      float lockAlpha = mix(alpha, 1.0, lockPhase);
+        float d=length((vUv-0.5)-dc);
 
-      droplets += ringM * lockAlpha;
+        float ringM=ring(d,size,w);
+
+        float alpha=(1.0-smoothstep(0.7,1.0,age));
+
+        droplets+=ringM*alpha;
     }
 
-    // clamp and combine with auraZone so it doesn't appear inside core
-    droplets = clamp(droplets, 0.0, 1.0);
-    droplets *= auraZone2 * uAura;
+    droplets*=rimMask; // only from rim
+    droplets*=uAura;
 
-    // rim of base aura is subtle; droplets carry the edge intent
-    auraRim = droplets;
-    auraMask *= 0.25; // keep a faint base field behind droplets
-  }
+    auraRim=droplets;
+    auraMask*=0.15;
+}
 
   // -------- Density interference (refractive warp) --------
   vec2 dirR = (r > 0.0001) ? (c / r) : vec2(0.0);
@@ -459,6 +461,13 @@ void main(){
   float mixHue = fract(greenHue + (dens-0.5)*0.06 + (hsv.x-greenHue)*0.12);
   vec3 auraHSV = vec3(mixHue, 0.55 + 0.25*uConv, 0.30 + 0.35*uAura);
   vec3 auraCol = hsv2rgb(auraHSV);
+  if(uAuraType>0.5 && uAuraType<1.5){
+    // flame color ramp
+    float heat = clamp(uFlameTemp,0.5,2.0);
+    vec3 hot = vec3(1.0,0.6,0.1);
+    vec3 cool = vec3(0.1,1.0,0.4);
+    auraCol = mix(cool, hot, heat*0.5);
+}
 
   // -------- Compose (aura must not be hidden by core) --------
   float coreA = smoothstep(0.02, 0.35, a);
@@ -652,6 +661,56 @@ function ensureAuraTypeUI() {
   setActive(Math.round(uniforms.uAuraType.value));
 }
 
+function ensureTypeSliders() {
+  const box = document.createElement("div");
+  box.style.position = "fixed";
+  box.style.left = "12px";
+  box.style.bottom = "12px";
+  box.style.zIndex = "9999";
+  box.style.display = "flex";
+  box.style.flexDirection = "column";
+  box.style.gap = "6px";
+  box.style.padding = "10px";
+  box.style.borderRadius = "12px";
+  box.style.background = "rgba(0,0,0,0.35)";
+  box.style.color = "white";
+  box.style.fontSize = "12px";
+  document.body.appendChild(box);
+
+  function slider(label, min, max, step, uniformKey) {
+    const wrap = document.createElement("div");
+    const l = document.createElement("div");
+    l.textContent = label;
+    const s = document.createElement("input");
+    s.type = "range";
+    s.min = min;
+    s.max = max;
+    s.step = step;
+    s.value = uniforms[uniformKey].value;
+    s.oninput = () => uniforms[uniformKey].value = Number(s.value);
+    wrap.appendChild(l);
+    wrap.appendChild(s);
+    box.appendChild(wrap);
+  }
+
+  slider("Flame Height", 0.5, 2.0, 0.01, "uFlameHeight");
+  slider("Flame Temp", 0.5, 2.0, 0.01, "uFlameTemp");
+
+  slider("Drop Speed", 0.5, 3.0, 0.01, "uDropSpeed");
+  slider("Drop Size", 0.5, 2.0, 0.01, "uDropSize");
+
+  // Drop direction selector
+  const sel = document.createElement("select");
+  ["Radial","Up","Left","Right"].forEach((t,i)=>{
+    const o=document.createElement("option");
+    o.value=i;
+    o.textContent=t;
+    sel.appendChild(o);
+  });
+  sel.onchange = ()=>uniforms.uDropDir.value = Number(sel.value);
+  box.appendChild(sel);
+}
+
 // ---------------------- Controls: Reset / Restart / Pause ----------------------
 function restartTimeline() {
   start = performance.now();
@@ -696,3 +755,4 @@ syncUniformsFromUI();
 ensureAuraTypeUI();
 loadDefaultTexture();
 requestAnimationFrame(animate);
+ensureTypeSliders();
