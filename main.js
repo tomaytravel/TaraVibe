@@ -345,25 +345,22 @@ void main(){
     auraMask *= radialPulse;
 
   } else if (uAuraType < 1.5) {
-    // TRUE FLAME PLUME
-
+    // TYPE 1: flame – 불꽃 형태가 테두리를 변형시킴
     float rimBase = ring(silDist, 0.55 + edgeShift, 0.06);
-
-    // upward plume distortion
     float plumeNoise = fbm(vec2(vUv.x*4.0, t*2.5));
     float plume = pow(max(0.0, vUv.y - 0.4), 1.8) * uFlameHeight;
     plume *= (0.5 + plumeNoise);
-
-    // tear upward
     float tear = sin(t*6.0 + ang*8.0) * 0.08;
     float flameShape = rimBase * (1.0 + plume + tear);
 
-    // temperature shift
-    float temp = clamp(uFlameTemp * (0.6 + plumeNoise), 0.0, 2.0);
+    // 기본 아우라 마스크를 플룸·찢김에 따라 변형
+    auraMask = auraZone2 * motion * uAura * oscAura;
+    auraMask *= (0.6 + plume + tear);
 
-    auraRim = flameShape * (0.9 + 0.4*temp);
-    auraMask *= (0.6 + plume);
-} else if (uAuraType < 2.5) {
+    // 림 색상은 기존처럼 불꽃의 온도에 따라 결정
+    float temp = clamp(uFlameTemp * (0.6 + plumeNoise), 0.0, 2.0);
+    auraRim = flameShape * (0.9 + 0.4 * temp);
+}  else if (uAuraType < 2.5) {
     // TYPE 2: full fade away
     // fade cycle after grown: repeatedly fades to zero and returns
     float fadeT = max(0.0, t - uGrowDur);
@@ -387,56 +384,44 @@ void main(){
     auraRim *= fade;
 
   } else {
-    // DROPLETS FROM RIM (not inside aura)
-
+    // TYPE 3: droplets – 기본 아우라 제거 후 물방울만 사용
+    auraMask = 0.0;            // 기본 아우라를 전부 제거
     float droplets = 0.0;
 
+    // rimMask는 auraZone2와 곱하지 않음
     float rimMask = ring(silDist, 0.55 + edgeShift, 0.04);
-    rimMask *= auraZone2;
 
     const int N = 12;
-    for(int i=0;i<N;i++){
+    for(int i=0; i<N; i++){
         float fi=float(i);
-
         float seed=fi*17.123;
         float ang0=fract(sin(seed)*43758.5453)*6.2831853;
-
         float life=fract((t*0.5*uDropSpeed + fi*0.21));
         float age=life;
 
-        // spawn exactly on rim
+        // 이동 방향 선택 (radial, up, left, right)
         vec2 baseDir;
+        if(uDropDir<0.5)      baseDir=vec2(cos(ang0), sin(ang0));
+        else if(uDropDir<1.5) baseDir=vec2(0.0, 1.0);
+        else if(uDropDir<2.5) baseDir=vec2(-1.0,0.0);
+        else                  baseDir=vec2(1.0,0.0);
 
-        if(uDropDir<0.5){
-            baseDir=vec2(cos(ang0),sin(ang0)); // radial
-        } else if(uDropDir<1.5){
-            baseDir=vec2(0.0,1.0);
-        } else if(uDropDir<2.5){
-            baseDir=vec2(-1.0,0.0);
-        } else {
-            baseDir=vec2(1.0,0.0);
-        }
+        // 경계에서 바로 바깥으로 시작
+        float dist = 0.26 + age*0.45;
+        vec2 dc   = baseDir * dist;
 
-        float dist=0.26 + age*0.45;
-        vec2 dc=baseDir*dist;
+        float size = mix(0.06, 0.01, age) * uDropSize;
+        float w    = mix(0.02, 0.005, age) * uDropSize;
+        float d    = length((vUv - 0.5) - dc);
 
-        float size=mix(0.06,0.01,age)*uDropSize;
-        float w=mix(0.02,0.005,age)*uDropSize;
-
-        float d=length((vUv-0.5)-dc);
-
-        float ringM=ring(d,size,w);
-
-        float alpha=(1.0-smoothstep(0.7,1.0,age));
-
-        droplets+=ringM*alpha;
+        float ringM = ring(d, size, w);
+        float alpha = (1.0 - smoothstep(0.7, 1.0, age));
+        droplets += ringM * alpha;
     }
 
-    droplets*=rimMask; // only from rim
-    droplets*=uAura;
-
-    auraRim=droplets;
-    auraMask*=0.15;
+    droplets *= rimMask * uAura;  // 림에서만 방출
+    auraRim   = droplets;
+    // auraMask는 0이므로 경계 안쪽은 보이지 않음
 }
 
   // -------- Density interference (refractive warp) --------
