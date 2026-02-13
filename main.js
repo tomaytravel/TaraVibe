@@ -1,3 +1,4 @@
+// green_tara_visual_test.js
 import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
 
 /**
@@ -14,9 +15,9 @@ import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
  * ✅ 추가:
  * - Aura Edge Type 4종 버튼 선택
  *   0: current (angular wobble rim + radial expansion)
- *   1: flame (upward flicker rim)
+ *   1: flame (upward flicker rim; 플룸·찢김으로 테두리형 변형)
  *   2: fade away (full fade cycle)
- *   3: droplets (independent rings fly out & shrink)
+ *   3: droplets (independent rings fly out & shrink from rim)
  */
 
 // ---------------------- DOM ----------------------
@@ -27,7 +28,7 @@ const btnReset = document.getElementById("reset");
 const btnPause = document.getElementById("pause");
 const btnRestart = document.getElementById("restart");
 
-// optional sliders
+// optional sliders (HTML에 존재한다면)
 const ui = {
   aura: document.getElementById("aura"),
   swim: document.getElementById("swim"),
@@ -36,7 +37,7 @@ const ui = {
   core: document.getElementById("core"),
 };
 
-// stage for drag & drop (optional)
+// drag&drop stage
 const stage = document.getElementById("stage") || document.body;
 
 // ---------------------- Runtime State ----------------------
@@ -212,7 +213,7 @@ void main(){
   float viewAspect = uRes.x/uRes.y;
   vec2 uv = containUV(vUv, uImgAspect, viewAspect);
 
-  // background
+  // background with subtle FBM noise
   float n0 = fbm(vUv*vec2(viewAspect,1.0)*2.0 + uTime*0.02);
   vec3 bg = vec3(0.03,0.04,0.06) + vec3(0.02,0.04,0.07)*(n0*0.25);
 
@@ -321,7 +322,7 @@ void main(){
 
   // -------- Aura Type selection --------
   // 0 current: angular wobble rim + radialPulse in field
-  // 1 flame: upward flicker rim (y-based) + less radialPulse
+  // 1 flame: upward flicker rim (y-based) + 테두리 변형
   // 2 fade: entire aura fades away periodically (full vanish)
   // 3 droplets: independent rings fly out & shrink
 
@@ -345,36 +346,41 @@ void main(){
     auraMask *= radialPulse;
 
   } else if (uAuraType < 1.5) {
-    // TYPE 1: flame – 불꽃 형태가 테두리를 변형시킴
-    float rimBase = ring(silDist, 0.55 + edgeShift, 0.06);
+    // TYPE 1: flame – 플룸과 찢김으로 테두리 자체 변형
+    float rimCenter = 0.55;
+    float rimBase = ring(silDist, rimCenter + edgeShift, 0.06);
+
     float plumeNoise = fbm(vec2(vUv.x*4.0, t*2.5));
     float plume = pow(max(0.0, vUv.y - 0.4), 1.8) * uFlameHeight;
     plume *= (0.5 + plumeNoise);
-    float tear = sin(t*6.0 + ang*8.0) * 0.08;
-    float flameShape = rimBase * (1.0 + plume + tear);
 
-    // 기본 아우라 마스크를 플룸·찢김에 따라 변형
+    // 찢어지는 효과
+    float tear = sin(t*6.0 + ang*8.0) * 0.08;
+
+    // 플룸/찢김에 따라 실루엣 거리 자체를 줄여 테두리 모양을 변형
+    float flameShift = (plume + tear) * 0.10;
+    float silDistFlame = silDist - flameShift;
+
+    // 변형된 실루엣에 따른 rim
+    float rimFlame = ring(silDistFlame, rimCenter + edgeShift, 0.06);
+    float temp = clamp(uFlameTemp * (0.6 + plumeNoise), 0.0, 2.0);
+    auraRim = rimFlame * (0.9 + 0.4 * temp);
+
+    // auraMask도 플룸/찢김에 따라 강도 조정
     auraMask = auraZone2 * motion * uAura * oscAura;
     auraMask *= (0.6 + plume + tear);
 
-    // 림 색상은 기존처럼 불꽃의 온도에 따라 결정
-    float temp = clamp(uFlameTemp * (0.6 + plumeNoise), 0.0, 2.0);
-    auraRim = flameShape * (0.9 + 0.4 * temp);
-}  else if (uAuraType < 2.5) {
+  } else if (uAuraType < 2.5) {
     // TYPE 2: full fade away
-    // fade cycle after grown: repeatedly fades to zero and returns
     float fadeT = max(0.0, t - uGrowDur);
-    float cycle = 10.0; // seconds per cycle
+    float cycle = 10.0;
     float ph = fract(fadeT / cycle);
-    // hold -> fade out -> empty -> fade in
     float fade = 1.0;
-    fade *= (1.0 - smoothstep(0.25, 0.55, ph));        // fade out
-    fade += smoothstep(0.70, 0.95, ph);                // fade in
+    fade *= (1.0 - smoothstep(0.25, 0.55, ph));
+    fade += smoothstep(0.70, 0.95, ph);
     fade = clamp(fade, 0.0, 1.0);
-    // stop fading on lock? (spec says lock stops motion; fade is also "motion")
     fade = mix(fade, 1.0, lockPhase);
 
-    // rim: simple crisp band
     float rimOuter = ring(silDist, 0.55 + edgeShift, 0.07);
     float rimW = 0.75 + 0.25*sin(t*1.0 + ang*2.0);
     float rimMotion = mix(rimW, 1.0, lockPhase);
@@ -384,12 +390,15 @@ void main(){
     auraRim *= fade;
 
   } else {
-    // TYPE 3: droplets – 기본 아우라 제거 후 물방울만 사용
-    auraMask = 0.0;            // 기본 아우라를 전부 제거
+    // TYPE 3: droplets – 기본 아우라를 숨기고 림에서 물방울 발사
+    auraMask = 0.0;            // 기본 아우라는 표시하지 않음
     float droplets = 0.0;
 
-    // rimMask는 auraZone2와 곱하지 않음
-    float rimMask = ring(silDist, 0.55 + edgeShift, 0.04);
+    // 림 기준 반지름 (실루엣의 rimCenter 사용)
+    float rimCenter = 0.55 + edgeShift;
+
+    // rimMask: 림 근처에서만 방출
+    float rimMask = ring(silDist, rimCenter, 0.04);
 
     const int N = 12;
     for(int i=0; i<N; i++){
@@ -406,23 +415,25 @@ void main(){
         else if(uDropDir<2.5) baseDir=vec2(-1.0,0.0);
         else                  baseDir=vec2(1.0,0.0);
 
-        // 경계에서 바로 바깥으로 시작
-        float dist = 0.26 + age*0.45;
+        // 시작점을 림 중심(rimCenter)에서 offset하여 밖으로 이동
+        float baseDist = rimCenter;
+        float dist = baseDist + age*0.45;
         vec2 dc   = baseDir * dist;
 
+        // 원 반경과 폭은 나이가 들어가면서 작아짐
         float size = mix(0.06, 0.01, age) * uDropSize;
         float w    = mix(0.02, 0.005, age) * uDropSize;
-        float d    = length((vUv - 0.5) - dc);
+        float d    = length(c - dc);
 
         float ringM = ring(d, size, w);
         float alpha = (1.0 - smoothstep(0.7, 1.0, age));
         droplets += ringM * alpha;
     }
 
-    droplets *= rimMask * uAura;  // 림에서만 방출
+    droplets *= rimMask * uAura;
     auraRim   = droplets;
-    // auraMask는 0이므로 경계 안쪽은 보이지 않음
-}
+    // auraMask=0이므로 테두리 안쪽은 표시하지 않음
+  }
 
   // -------- Density interference (refractive warp) --------
   vec2 dirR = (r > 0.0001) ? (c / r) : vec2(0.0);
@@ -445,7 +456,7 @@ void main(){
   hsv.z = clamp(hsv.z + 0.06 * (uConv * convMod), 0.0, 1.0);
 
   vec3 coreCol = hsv2rgb(hsv);
-  coreCol *= uCore * (1.0 + 0.22*lockPhase); // only Tara brightens on lock
+  coreCol *= uCore * (1.0 + 0.22*lockPhase); // 정렬 시 타라만 밝아짐
 
   // -------- Aura color interference --------
   float dens = fbm(vUv*vec2(viewAspect,1.0)*4.0 + t*0.12);
@@ -453,12 +464,12 @@ void main(){
   vec3 auraHSV = vec3(mixHue, 0.55 + 0.25*uConv, 0.30 + 0.35*uAura);
   vec3 auraCol = hsv2rgb(auraHSV);
   if(uAuraType>0.5 && uAuraType<1.5){
-    // flame color ramp
+    // flame 컬러 ramp
     float heat = clamp(uFlameTemp,0.5,2.0);
     vec3 hot = vec3(1.0,0.6,0.1);
     vec3 cool = vec3(0.1,1.0,0.4);
     auraCol = mix(cool, hot, heat*0.5);
-}
+  }
 
   // -------- Compose (aura must not be hidden by core) --------
   float coreA = smoothstep(0.02, 0.35, a);
@@ -466,7 +477,7 @@ void main(){
   vec3 col = bg2;
   col = mix(col, col + auraCol*0.22, auraMask);
 
-  // field + rim
+  // aura field + rim
   col += auraCol * auraMask * 0.40;
   col += auraCol * auraRim * 0.95;
 
@@ -514,6 +525,7 @@ function setTexture(tex) {
   uniforms.uImgAspect.value = (img?.width && img?.height) ? (img.width / img.height) : 1.0;
 }
 
+// load texture from URL (used for default or uploaded image)
 function loadTextureFromURL(url, onDone) {
   const loader = new THREE.TextureLoader();
   loader.load(
@@ -530,6 +542,7 @@ function loadTextureFromURL(url, onDone) {
   );
 }
 
+// 자동 tara.png 로드 (상대→절대 폴백)
 function loadDefaultTexture() {
   const url1 = "tara.png";
   const url2 = new URL("tara.png", window.location.href).toString();
@@ -538,7 +551,7 @@ function loadDefaultTexture() {
   });
 }
 
-// Upload
+// Upload/drag&drop
 fileInput?.addEventListener("change", (e) => {
   const f = e.target.files?.[0];
   if (!f) return;
@@ -652,6 +665,7 @@ function ensureAuraTypeUI() {
   setActive(Math.round(uniforms.uAuraType.value));
 }
 
+// 타입별 슬라이더 (불꽃 높이/온도, 물방울 속도/크기)
 function ensureTypeSliders() {
   const box = document.createElement("div");
   box.style.position = "fixed";
