@@ -140,6 +140,12 @@ uniform float uConvOscCount;
 
 uniform float uAuraMaxPx;
 uniform float uAuraType;
+uniform float uFlameHeight;
+uniform float uFlameTemp;
+
+uniform float uDropSpeed;
+uniform float uDropSize;
+uniform float uDropDir;
 
 // -------- noise --------
 float hash(vec2 p){
@@ -411,7 +417,7 @@ void main(){
             baseDir=vec2(1.0,0.0);
         }
 
-        float dist=0.02 + age*0.5;
+        float dist=0.26 + age*0.45;
         vec2 dc=baseDir*dist;
 
         float size=mix(0.06,0.01,age)*uDropSize;
