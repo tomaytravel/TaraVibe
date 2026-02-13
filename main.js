@@ -1,30 +1,33 @@
 import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
 
 /**
- * GREEN TARA – WEB VISUAL TEST (FULL SPEC BUILD)
+ * GREEN TARA – WEB VISUAL TEST (FULL SPEC + AURA STYLE TYPES)
  *
- * 목표:
- * - GitHub Pages에 올리면 즉시 실행되는 정적 웹
- * - 타라 본체는 알파 PNG (기본 tara.png 자동 로드 + 업로드/드롭 교체)
- * - 아우라: 실루엣(알파) 기반 생성 → 성장(0~8s) → 3회 감쇠 진동 수렴 → 60~62s 정렬(움직임 정지) → 유지
- * - 아우라 두께: 기존 대비 7배(최대 280px, 화면 크기 대비 clamp 완화)
- * - 외곽 테두리: 각도 기반 경계 “일렁거림”이 확실히 보이도록 (radial boundary jitter)
- * - 내부: 구름/연기 flow 느낌 제거 → 중심에서 퍼져나가는 힘(방사 파동 + 방사 굴절)
- * - 밀도 간섭(굴절): 아우라 영역에서 배경 공간이 간섭됨(정렬 후 정지)
- * - 퍼지 색 수렴: HSV 기반 녹색으로 수렴(성장 구간에 강해짐)
- * - UI: reset/pause/restart, 슬라이더(있으면)
- * - 안정성: 기본 이미지 로드 폴백(상대→절대), 로드 실패 로그, 널 가드
+ * ✅ 기존 명세(풀버전) 유지:
+ * - 기본 tara.png 자동 로드(상대→절대 폴백)
+ * - 업로드/드래그드롭 교체
+ * - 0~8초 성장 + 3회 감쇠 진동 수렴
+ * - 60~62초 정렬(움직임 정지) + 본체만 밝아짐
+ * - 굴절(밀도 간섭) + HSV 녹색 수렴
+ * - 리셋/재시작/일시정지 + 슬라이더(있으면)
+ *
+ * ✅ 추가:
+ * - Aura Edge Type 4종 버튼 선택
+ *   0: current (angular wobble rim + radial expansion)
+ *   1: flame (upward flicker rim)
+ *   2: fade away (full fade cycle)
+ *   3: droplets (independent rings fly out & shrink)
  */
 
 // ---------------------- DOM ----------------------
 const canvas = document.getElementById("c");
 const fileInput = document.getElementById("file");
 
-const btnReset = document.getElementById("reset");     // 파라미터 리셋 (+Shift = 타임라인 리스타트)
-const btnPause = document.getElementById("pause");     // 일시정지/재생
-const btnRestart = document.getElementById("restart"); // (선택) 타임라인 재시작
+const btnReset = document.getElementById("reset");
+const btnPause = document.getElementById("pause");
+const btnRestart = document.getElementById("restart");
 
-// optional sliders (있으면 연결)
+// optional sliders
 const ui = {
   aura: document.getElementById("aura"),
   swim: document.getElementById("swim"),
@@ -58,29 +61,22 @@ camera.position.z = 1;
 
 const quad = new THREE.PlaneGeometry(2, 2);
 
-// ---------------------- Defaults (SPEC) ----------------------
+// ---------------------- Defaults ----------------------
 const DEFAULTS = {
-  // visuals
-  aura: 0.75,     // 아우라 강도
-  swim: 0.60,     // 유영/거동 강도 (방사 파동과 함께 쓰되 과한 “연기” 방지)
-  breath: 0.45,   // 호흡 강도
-  conv: 0.70,     // 녹색 수렴 강도
-  core: 1.12,     // 타라 본체 밝기 기본
+  aura: 0.75,
+  swim: 0.60,
+  breath: 0.45,
+  conv: 0.70,
+  core: 1.12,
 
-  // timeline
   growSeconds: 8.0,
   lockStart: 60.0,
   lockEnd: 62.0,
 
-  // exact “3 oscillations” during convergence
   convOscCount: 3.0,
-
-  // aura thickness: 7x baseline (40px → 280px)
   auraMaxPx: 280.0,
 
-  // quality knobs
-  dirs: 24,
-  steps: 10, // 8~14; 높을수록 “필드” 채워짐(성능 비용 증가)
+  auraType: 0, // 0 current, 1 flame, 2 fade, 3 droplets
 };
 
 // ---------------------- Uniforms ----------------------
@@ -91,21 +87,19 @@ const uniforms = {
   uRes: { value: new THREE.Vector2(1, 1) },
   uImgAspect: { value: 1.0 },
 
-  // tuning
   uAura: { value: DEFAULTS.aura },
   uSwim: { value: DEFAULTS.swim },
   uBreath: { value: DEFAULTS.breath },
   uConv: { value: DEFAULTS.conv },
   uCore: { value: DEFAULTS.core },
 
-  // timeline
   uGrowDur: { value: DEFAULTS.growSeconds },
   uLockStart: { value: DEFAULTS.lockStart },
   uLockEnd: { value: DEFAULTS.lockEnd },
   uConvOscCount: { value: DEFAULTS.convOscCount },
 
-  // aura thickness max px
   uAuraMaxPx: { value: DEFAULTS.auraMaxPx },
+  uAuraType: { value: DEFAULTS.auraType },
 };
 
 const vert = /* glsl */ `
@@ -139,6 +133,7 @@ uniform float uLockEnd;
 uniform float uConvOscCount;
 
 uniform float uAuraMaxPx;
+uniform float uAuraType;
 
 // -------- noise --------
 float hash(vec2 p){
@@ -193,12 +188,19 @@ vec3 hsv2rgb(vec3 c){
   return c.z * mix(K.xxx, clamp(p - K.xxx, 0., 1.), c.y);
 }
 
+// narrow ring helper around a scalar x
+float ring(float x, float center, float w){
+  float a = smoothstep(center - w, center, x);
+  float b = smoothstep(center, center + w, x);
+  return a - b;
+}
+
 void main(){
 
   float viewAspect = uRes.x/uRes.y;
   vec2 uv = containUV(vUv, uImgAspect, viewAspect);
 
-  // background (avoid pure black)
+  // background
   float n0 = fbm(vUv*vec2(viewAspect,1.0)*2.0 + uTime*0.02);
   vec3 bg = vec3(0.03,0.04,0.06) + vec3(0.02,0.04,0.07)*(n0*0.25);
 
@@ -217,29 +219,26 @@ void main(){
   float p = grow;
   float osc = sin(6.2831853 * uConvOscCount * p);
   float damp = (1.0 - p);
-  float oscEnv = osc * damp;          // [-.. ..]
-  float osc01 = 0.5 + 0.5*oscEnv;     // [~0..1]
+  float oscEnv = osc * damp;
+  float osc01 = 0.5 + 0.5*oscEnv;
   float convMod = clamp(grow * (0.85 + 0.30*oscEnv), 0.0, 1.0);
 
-  // sample base (for alpha)
+  // sample base
   vec4 tex0 = texture2D(uTex, uv);
   float a0 = tex0.a;
-
-  // core stability mask: keep inside steadier (reduce motion)
   float coreMask = smoothstep(0.05, 0.75, a0);
 
-  // radial coordinates (screen-space center)
+  // center coordinates
   vec2 c = vUv - vec2(0.5);
   float r = length(c);
   float ang = atan(c.y, c.x);
 
-  // breathing (global), damp after lock
+  // breathing (stops on lock)
   float breathBase = 0.6 + 0.4*sin(t*0.6);
   float breatheAmt = uBreath * (0.15 + 0.35*breathBase);
-  float breathLock = mix(1.0, 0.0, lockPhase); // used to stop some motion
+  float breathLock = mix(1.0, 0.0, lockPhase);
 
-  // texture UV wobble: keep minimal, avoid smoke feel
-  // (we keep slight micro variation but clamp heavily)
+  // micro wobble in UV (keep minimal; avoid smoke)
   float micro = fbm(vUv*vec2(viewAspect,1.0)*6.0 + vec2(t*0.03, -t*0.02));
   vec2 microDisp = (vec2(micro, fbm(vUv*7.0 + t*0.04)) - 0.5) * 0.0015;
   vec2 uv2 = uv + microDisp * (1.0 - coreMask*0.85) * uSwim * (0.4 + breatheAmt) * breathLock;
@@ -247,88 +246,192 @@ void main(){
   vec4 tex = texture2D(uTex, uv2);
   float a = tex.a;
 
-  // -------- Aura thickness (7x) --------
+  // aura thickness (7x)
   float minRes = min(uRes.x, uRes.y);
-  float auraMaxPx = min(uAuraMaxPx, minRes * 0.60); // clamp relaxed
+  float auraMaxPx = min(uAuraMaxPx, minRes * 0.60);
   float radius = mix(0.0, auraMaxPx, grow);
   vec2 px = vec2(1.0/uRes.x, 1.0/uRes.y);
 
-  // -------- Edge gradient (helps boundary intelligence) --------
+  // edge gradient
   vec2 eps = vec2(1.5/uRes.x, 1.5/uRes.y);
   float aL = texture2D(uTex, uv2 - vec2(eps.x,0.0)).a;
   float aR = texture2D(uTex, uv2 + vec2(eps.x,0.0)).a;
   float aD = texture2D(uTex, uv2 - vec2(0.0,eps.y)).a;
   float aU = texture2D(uTex, uv2 + vec2(0.0,eps.y)).a;
-  float grad = (abs(aR-aL) + abs(aU-aD));
+  float grad = (abs(aR-aL) + (abs(aU-aD)));
   float edge = smoothstep(0.01, 0.06, grad);
 
-  // -------- Thick dilation (disk approximation) --------
-  // Key fix: not a single ring; we fill 0..radius with multiple steps → thick aura field
+  // boundary jitter seed (shared)
+  float edgeJitA = fbm(vec2(ang*2.0, t*0.25)) - 0.5;
+  float edgeShift = edgeJitA * 0.16 * (1.0 - lockPhase);
+
+  // thick dilation (disk approximation)
   float dil = 0.0;
   const int DIRS = 24;
   const int STEPS = 10;
 
-  // boundary jitter: angular-based outward/inward movement of the boundary (visible)
-  float edgeJit = fbm(vec2(ang*2.0, t*0.25)) - 0.5;   // -0.5..0.5
-  float edgeShift = edgeJit * 0.16 * (1.0 - lockPhase); // boundary shift amount
-
   for(int i=0;i<DIRS;i++){
     float a2 = float(i) * 6.2831853 / float(DIRS);
     vec2 dir = vec2(cos(a2), sin(a2));
-
-    // radius jitter per direction (adds “living” boundary)
     float rJ = (fbm(vec2(a2*1.7, t*0.22)) - 0.5);
     float radiusJ = radius * (1.0 + rJ * 0.12 * (1.0 - lockPhase));
 
     for(int s=1;s<=STEPS;s++){
       float k = float(s)/float(STEPS);
       float rr = radiusJ * k;
-      float w = 1.0 - k; // inside weight
+      float w = 1.0 - k;
       float aa = texture2D(uTex, uv2 + dir * rr * px).a;
       dil = max(dil, aa * (0.35 + 0.65*w));
     }
   }
 
-  // Aura zone outside silhouette (and not inside core)
+  // aura zone outside silhouette
   float auraZone = smoothstep(0.02, 0.75, dil) * (1.0 - smoothstep(0.05, 0.98, a));
   float auraZone2 = clamp(auraZone + edge*0.55, 0.0, 1.0);
 
-  // silhouette distance-ish scalar (outer boundary extraction)
+  // silhouette distance-ish scalar
   float silDist = 1.0 - dil;
 
-  // -------- Outer rim (explicit boundary band + angular jitter) --------
-  // Use silDist + edgeShift so the edge actually “moves”
-  float rimCenter = 0.55; // where outer boundary band lives in silDist space
-  float rimOuter =
-      smoothstep(rimCenter - 0.06 + edgeShift, rimCenter - 0.01 + edgeShift, silDist)
-    - smoothstep(rimCenter + 0.01 + edgeShift, rimCenter + 0.09 + edgeShift, silDist);
-  rimOuter = clamp(rimOuter, 0.0, 1.0);
-
-  // temporal shimmer on rim (stops on lock)
-  float rimW = 0.75 + 0.25*sin(t*1.1 + ang*3.0 + edgeJit*6.2831853);
-  float rimMotion = mix(rimW, 1.0, lockPhase);
-  float auraRim = rimOuter * rimMotion * uAura;
-
-  // -------- “힘” 표현: radial expansion pulse (from center outward) --------
-  // This replaces smoke-like flow with radial waves / pressure
-  float speed = 0.35;
-  float freq  = 12.0; // lower -> fewer stripes, more “pressure” look
-  float wave  = sin((r - t*speed) * freq);
-  float wave2 = sin((r - t*speed*0.62) * (freq*0.55) + ang*1.2);
-
-  // damp after lock, also incorporate 3-osc envelope
-  float waveAmp = (0.28 + 0.20*oscEnv) * (1.0 - lockPhase);
-  float radialPulse = 1.0 + waveAmp * (0.6*wave + 0.4*wave2);
-
-  // motion for aura density: breathe + subtle oscillation, becomes static on lock
+  // global aura motion envelope (stops on lock)
   float swimBreath = 0.6 + 0.4*sin(t*0.45 + fbm(vUv*2.2 + vec2(t*0.03, -t*0.05))*6.2831853);
   float oscAura = mix(1.0, (0.75 + 0.35*osc01), grow);
   float motion = mix((0.35 + 0.65*swimBreath), 1.0, lockPhase);
 
-  float auraMask = auraZone2 * motion * uAura * oscAura;
+  float auraMaskBase = auraZone2 * motion * uAura * oscAura;
+
+  // radial expansion pulse (force from center outward)
+  float speed = 0.35;
+  float freq  = 12.0;
+  float wave  = sin((r - t*speed) * freq);
+  float wave2 = sin((r - t*speed*0.62) * (freq*0.55) + ang*1.2);
+  float waveAmp = (0.28 + 0.20*oscEnv) * (1.0 - lockPhase);
+  float radialPulse = 1.0 + waveAmp * (0.6*wave + 0.4*wave2);
+
+  // -------- Aura Type selection --------
+  // 0 current: angular wobble rim + radialPulse in field
+  // 1 flame: upward flicker rim (y-based) + less radialPulse
+  // 2 fade: entire aura fades away periodically (full vanish)
+  // 3 droplets: independent rings fly out & shrink
+
+  float auraMask = auraMaskBase;
+  float auraRim = 0.0;
+
+  // Common aura color later; we only craft masks here.
+
+  if (uAuraType < 0.5) {
+    // TYPE 0: current (angular boundary wobble)
+    float rimCenter = 0.55;
+    float rimOuter =
+        smoothstep(rimCenter - 0.06 + edgeShift, rimCenter - 0.01 + edgeShift, silDist)
+      - smoothstep(rimCenter + 0.01 + edgeShift, rimCenter + 0.09 + edgeShift, silDist);
+    rimOuter = clamp(rimOuter, 0.0, 1.0);
+
+    float rimW = 0.75 + 0.25*sin(t*1.1 + ang*3.0 + edgeJitA*6.2831853);
+    float rimMotion = mix(rimW, 1.0, lockPhase);
+    auraRim = rimOuter * rimMotion * uAura;
+
+    auraMask *= radialPulse;
+
+  } else if (uAuraType < 1.5) {
+    // TYPE 1: flame upward flicker
+    // Flame bias: top stronger, flicker rises with time
+    float y = vUv.y;
+    float flameBand = ring(silDist, 0.55 + edgeShift, 0.07); // boundary band
+    float flick = fbm(vec2(ang*3.0, t*1.2 + y*3.0));
+    float upF = fbm(vec2(vUv.x*2.0, t*1.6 + y*6.0));
+    float flame = (0.6 + 0.4*sin(t*5.0 + flick*6.2831853)) * (0.5 + 0.5*upF);
+
+    // upward “licking” effect: more at top, less at bottom
+    float upBias = smoothstep(0.25, 0.95, y);
+    float downCut = 1.0 - smoothstep(0.0, 0.25, y);
+    float verticalShape = upBias * (0.65 + 0.35*downCut);
+
+    float flameMotion = mix(flame, 1.0, lockPhase);
+    auraRim = clamp(flameBand * flameMotion * verticalShape * (0.8 + 0.5*uAura), 0.0, 1.0);
+
+    // field less “wave”, more “heat”
+    float heat = 0.85 + 0.15*sin(t*3.0 + flick*6.2831853);
+    auraMask *= heat;
+
+  } else if (uAuraType < 2.5) {
+    // TYPE 2: full fade away
+    // fade cycle after grown: repeatedly fades to zero and returns
+    float fadeT = max(0.0, t - uGrowDur);
+    float cycle = 10.0; // seconds per cycle
+    float ph = fract(fadeT / cycle);
+    // hold -> fade out -> empty -> fade in
+    float fade = 1.0;
+    fade *= (1.0 - smoothstep(0.25, 0.55, ph));        // fade out
+    fade += smoothstep(0.70, 0.95, ph);                // fade in
+    fade = clamp(fade, 0.0, 1.0);
+    // stop fading on lock? (spec says lock stops motion; fade is also "motion")
+    fade = mix(fade, 1.0, lockPhase);
+
+    // rim: simple crisp band
+    float rimOuter = ring(silDist, 0.55 + edgeShift, 0.07);
+    float rimW = 0.75 + 0.25*sin(t*1.0 + ang*2.0);
+    float rimMotion = mix(rimW, 1.0, lockPhase);
+    auraRim = clamp(rimOuter * rimMotion * uAura, 0.0, 1.0);
+
+    auraMask *= fade;
+    auraRim *= fade;
+
+  } else {
+    // TYPE 3: droplets (independent rings fly out & shrink)
+    // We generate several procedural droplets with different birth offsets.
+    // Each droplet is a ring around its own center, moving outward and shrinking.
+    float droplets = 0.0;
+
+    // Only spawn after some growth (so it doesn't fight early formation)
+    float tt = max(0.0, t - 1.0);
+
+    // droplet count
+    const int N = 10;
+    for (int i = 0; i < N; i++) {
+      float fi = float(i);
+
+      // per droplet seeds
+      float seed = fi * 13.37;
+      float ang0 = fract(sin(seed*12.9898) * 43758.5453) * 6.2831853;
+
+      // life timing
+      float off = fract(sin((seed+2.0)*78.233) * 43758.5453) * 6.0; // 0..6
+      float life = fract((tt + off) / 3.5);                         // 0..1 repeating
+      float age = life;
+
+      // start near silhouette edge, move outward
+      float startR = 0.18 + 0.06*fract(sin((seed+4.0)*11.1)*999.9);
+      float travel = 0.35; // how far it goes
+      float dr = startR + travel * age;
+
+      // droplet center in screen UV
+      vec2 dc = vec2(cos(ang0), sin(ang0)) * dr;
+
+      // droplet ring radius shrinks with age
+      float ringR = mix(0.06, 0.01, age);
+      float ringW = mix(0.020, 0.008, age);
+
+      float d = length((vUv - 0.5) - dc);
+      float ringM = ring(d, ringR, ringW);
+
+      // fade out as it ages
+      float alpha = (1.0 - smoothstep(0.65, 1.0, age));
+      // stop motion on lock: freeze at age ~ current age, so just keep visible (no time change)
+      float lockAlpha = mix(alpha, 1.0, lockPhase);
+
+      droplets += ringM * lockAlpha;
+    }
+
+    // clamp and combine with auraZone so it doesn't appear inside core
+    droplets = clamp(droplets, 0.0, 1.0);
+    droplets *= auraZone2 * uAura;
+
+    // rim of base aura is subtle; droplets carry the edge intent
+    auraRim = droplets;
+    auraMask *= 0.25; // keep a faint base field behind droplets
+  }
 
   // -------- Density interference (refractive warp) --------
-  // Use radial direction (push outward) instead of sideways flow
   vec2 dirR = (r > 0.0001) ? (c / r) : vec2(0.0);
   float warpAmt = 0.026 * auraMask * (1.0 - lockPhase) * radialPulse;
   vec2 warp = dirR * warpAmt;
@@ -349,11 +452,9 @@ void main(){
   hsv.z = clamp(hsv.z + 0.06 * (uConv * convMod), 0.0, 1.0);
 
   vec3 coreCol = hsv2rgb(hsv);
+  coreCol *= uCore * (1.0 + 0.22*lockPhase); // only Tara brightens on lock
 
-  // key rule: “타라만 밝아짐” (space not)
-  coreCol *= uCore * (1.0 + 0.22*lockPhase);
-
-  // -------- Aura color interference (boundary hue varies) --------
+  // -------- Aura color interference --------
   float dens = fbm(vUv*vec2(viewAspect,1.0)*4.0 + t*0.12);
   float mixHue = fract(greenHue + (dens-0.5)*0.06 + (hsv.x-greenHue)*0.12);
   vec3 auraHSV = vec3(mixHue, 0.55 + 0.25*uConv, 0.30 + 0.35*uAura);
@@ -363,31 +464,26 @@ void main(){
   float coreA = smoothstep(0.02, 0.35, a);
 
   vec3 col = bg2;
-
-  // density layer
   col = mix(col, col + auraCol*0.22, auraMask);
 
-  // thick field + radialPulse (power outward)
-  col += auraCol * auraMask * 0.40 * radialPulse;
-
-  // crisp outer boundary shimmer
+  // field + rim
+  col += auraCol * auraMask * 0.40;
   col += auraCol * auraRim * 0.95;
 
   // core overlay
   col = mix(col, coreCol, coreA);
 
-  // keep aura visible around edges even on top of core (avoid painting deep inside)
+  // aura on top near edge, not deep inside
   col += auraCol * auraMask * (1.0 - a*0.80) * 0.40;
 
   // vignette
   float vign = smoothstep(1.1, 0.35, length(vUv - 0.5));
   col *= 0.88 + 0.12*vign;
 
-  gl_FragColor = vec4(col, 1.0);
+  gl_FragColor = vec4(col,1.0);
 }
 `;
 
-// ---------------------- Material/Mesh ----------------------
 const material = new THREE.ShaderMaterial({
   uniforms,
   vertexShader: vert,
@@ -434,7 +530,6 @@ function loadTextureFromURL(url, onDone) {
   );
 }
 
-// Robust default load: relative → absolute
 function loadDefaultTexture() {
   const url1 = "tara.png";
   const url2 = new URL("tara.png", window.location.href).toString();
@@ -467,7 +562,7 @@ stage.addEventListener("drop", (e) => {
   });
 });
 
-// ---------------------- UI Wiring ----------------------
+// ---------------------- UI Wiring (sliders optional) ----------------------
 function applyDefaultsToUI() {
   if (ui.aura) ui.aura.value = String(DEFAULTS.aura);
   if (ui.swim) ui.swim.value = String(DEFAULTS.swim);
@@ -490,6 +585,73 @@ ui.breath?.addEventListener("input", syncUniformsFromUI);
 ui.conv?.addEventListener("input", syncUniformsFromUI);
 ui.core?.addEventListener("input", syncUniformsFromUI);
 
+// ---------------------- Aura Type Buttons (auto-create) ----------------------
+function ensureAuraTypeUI() {
+  let box = document.getElementById("auraTypeBox");
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "auraTypeBox";
+    box.style.position = "fixed";
+    box.style.left = "12px";
+    box.style.top = "12px";
+    box.style.zIndex = "9999";
+    box.style.display = "flex";
+    box.style.gap = "8px";
+    box.style.padding = "10px";
+    box.style.borderRadius = "12px";
+    box.style.background = "rgba(0,0,0,0.35)";
+    box.style.backdropFilter = "blur(6px)";
+    box.style.webkitBackdropFilter = "blur(6px)";
+    box.style.userSelect = "none";
+    document.body.appendChild(box);
+  }
+
+  const items = [
+    { id: "auraType0", label: "현재" },
+    { id: "auraType1", label: "불꽃" },
+    { id: "auraType2", label: "페이드" },
+    { id: "auraType3", label: "물방울" },
+  ];
+
+  function mkBtn(item, idx) {
+    let b = document.getElementById(item.id);
+    if (!b) {
+      b = document.createElement("button");
+      b.id = item.id;
+      b.type = "button";
+      b.textContent = item.label;
+      b.style.padding = "8px 10px";
+      b.style.borderRadius = "10px";
+      b.style.border = "1px solid rgba(255,255,255,0.18)";
+      b.style.background = "rgba(255,255,255,0.08)";
+      b.style.color = "white";
+      b.style.fontSize = "13px";
+      b.style.cursor = "pointer";
+      b.onmouseenter = () => (b.style.background = "rgba(255,255,255,0.14)");
+      b.onmouseleave = () => (b.style.background = "rgba(255,255,255,0.08)");
+      box.appendChild(b);
+    }
+    b.onclick = () => {
+      uniforms.uAuraType.value = idx;
+      setActive(idx);
+    };
+    return b;
+  }
+
+  const btns = items.map((it, idx) => mkBtn(it, idx));
+
+  function setActive(activeIdx) {
+    for (let i = 0; i < btns.length; i++) {
+      const b = btns[i];
+      const on = i === activeIdx;
+      b.style.outline = on ? "2px solid rgba(120,255,180,0.75)" : "none";
+      b.style.background = on ? "rgba(120,255,180,0.18)" : "rgba(255,255,255,0.08)";
+    }
+  }
+
+  setActive(Math.round(uniforms.uAuraType.value));
+}
+
 // ---------------------- Controls: Reset / Restart / Pause ----------------------
 function restartTimeline() {
   start = performance.now();
@@ -500,7 +662,6 @@ function restartTimeline() {
 
 btnRestart?.addEventListener("click", restartTimeline);
 
-// Reset: parameters; SHIFT+Reset = timeline restart
 btnReset?.addEventListener("click", (e) => {
   uniforms.uAura.value = DEFAULTS.aura;
   uniforms.uSwim.value = DEFAULTS.swim;
@@ -510,6 +671,7 @@ btnReset?.addEventListener("click", (e) => {
 
   applyDefaultsToUI();
 
+  // Shift+Reset => timeline restart
   if (e.shiftKey) restartTimeline();
 });
 
@@ -521,11 +683,9 @@ btnPause?.addEventListener("click", () => {
 // ---------------------- Render Loop ----------------------
 function animate(now) {
   requestAnimationFrame(animate);
-
   if (!paused) {
     uniforms.uTime.value = (now - start) / 1000.0;
   }
-
   renderer.render(scene, camera);
 }
 
@@ -533,5 +693,6 @@ function animate(now) {
 resize();
 applyDefaultsToUI();
 syncUniformsFromUI();
+ensureAuraTypeUI();
 loadDefaultTexture();
 requestAnimationFrame(animate);
