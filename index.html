@@ -1,48 +1,30 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ko">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Green Tara Aura Test</title>
-  <link rel="stylesheet" href="style.css" />
+  <meta charset="UTF-8">
+  <title>Green Tara Aura Prototype</title>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header class="topbar">
-    <div class="title">
-      <strong>Green Tara</strong>
-      <span class="sub">Aura / Density Interference (WebGL)</span>
+  <div id="control-panel">
+    <input type="file" id="file" accept="image/png" />
+    <button id="reset">초기화</button>
+    <button id="pause">일시정지</button>
+    <button id="restart">재시작</button>
+
+    <!-- 슬라이더 UI는 있으면 되고 없어도 동작함 -->
+    <div id="sliderBox">
+      <label>아우라 세기<input type="range" id="aura" min="0" max="1" step="0.01" value="0.75"/></label>
+      <label>미세움직임<input type="range" id="swim" min="0" max="1" step="0.01" value="0.6"/></label>
+      <label>호흡<input type="range" id="breath" min="0" max="1" step="0.01" value="0.45"/></label>
+      <label>진동수렴<input type="range" id="conv" min="0" max="1" step="0.01" value="0.7"/></label>
+      <label>본체밝기<input type="range" id="core" min="0" max="2" step="0.01" value="1.12"/></label>
     </div>
+  </div>
 
-    <div class="controls">
-      <label class="btn">
-        PNG 업로드
-        <input id="file" type="file" accept="image/png,image/webp,image/jpeg" />
-      </label>
+  <canvas id="c"></canvas>
 
-      <button id="reset" class="btn secondary" title="기본값으로">리셋</button>
-      <button id="pause" class="btn secondary" title="애니메이션 일시정지">일시정지</button>
-    </div>
-  </header>
-
-  <main id="stage">
-    <canvas id="c"></canvas>
-
-    <div class="hint">
-      <div>• PNG(알파 포함) 권장. 드래그&드롭도 가능.</div>
-      <div>• repo에 <code>tara.png</code>가 있으면 자동 로드됩니다.</div>
-    </div>
-  </main>
-
-  <footer class="footer">
-    <div class="row">
-      <label>아우라 강도 <input id="aura" type="range" min="0" max="1" step="0.01" value="0.55"></label>
-      <label>유영(헤엄) <input id="swim" type="range" min="0" max="1" step="0.01" value="0.55"></label>
-      <label>호흡 <input id="breath" type="range" min="0" max="1" step="0.01" value="0.35"></label>
-      <label>녹색 수렴 <input id="conv" type="range" min="0" max="1" step="0.01" value="0.65"></label>
-      <label>본체 밝기 <input id="core" type="range" min="0.2" max="2.0" step="0.01" value="1.12"></label>
-    </div>
-  </footer>
-
+  <!-- 기본 타라 이미지를 제공해 프로젝트 폴더에 넣어두면 자동로드 -->
   <script type="module" src="main.js"></script>
 </body>
 </html>
